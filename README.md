@@ -121,4 +121,4 @@ tests for GC conservativeness and dual visibility-implementation equivalence
 
 ## License
 
-Licensed under the [Apache License, Version 2.0](LICENSE).
+Apache-2.0
