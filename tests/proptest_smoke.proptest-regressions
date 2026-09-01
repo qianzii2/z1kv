@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c2c10a08a8657164649e17c71978fd55ab6370c5de2384466c94e37a1de83586 # shrinks to snapshot_id = 0, created = 6, deleted = None, committed = [(6, 0)]
+cc 7b0d77731a91d0f8b561fb89d9b9cd008a16f73124d596468d70a242de5ebd23 # shrinks to snapshot_id = 0, created = 4, deleted = Some(23), committed = [(4, 0), (23, 0)]

@@ -1,0 +1,49 @@
+[package]
+name = "z1kv"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+description = "Z1KV — embedded MVCC key-value engine with a three-layer delta storage stack"
+keywords = ["kv", "mvcc", "embedded", "storage"]
+categories = ["database", "database-implementations", "data-structures"]
+
+# Standalone project: intentionally not part of any parent workspace.
+# fuzz/ is a separate cargo-fuzz workspace, excluded from this crate.
+[workspace]
+exclude = ["fuzz"]
+
+[dependencies]
+# Serialization (serde derives for patch/checkpoint/WAL structs via postcard;
+# "rc" supports the Arc<Vec<u8>> value field of PatchEntry)
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+postcard = { version = "1.0", features = ["alloc", "use-std"] }
+
+# Concurrency
+parking_lot = "0.12"
+arc-swap = "1.9"
+
+# CRC
+crc32fast = "1.5"
+
+# Tracing
+tracing = "0.1"
+
+# Errors
+thiserror = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+# fsync_parent_dir: open directory with FILE_FLAG_BACKUP_SEMANTICS + FlushFileBuffers
+windows = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Security", "Win32_Foundation"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+[dev-dependencies]
+loom = "0.7.2"
+proptest = "1.9.0"

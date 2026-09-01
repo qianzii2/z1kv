@@ -1,0 +1,36 @@
+[package]
+name = "z1kv-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.z1kv]
+path = ".."
+
+[[bin]]
+name = "parse_wal_record"
+path = "fuzz_targets/parse_wal_record.rs"
+
+[[bin]]
+name = "parse_patch"
+path = "fuzz_targets/parse_patch.rs"
+
+[[bin]]
+name = "parse_checkpoint"
+path = "fuzz_targets/parse_checkpoint.rs"
+
+[[bin]]
+name = "visibility_properties"
+path = "fuzz_targets/visibility_properties.rs"
+test = false
+doc = false
+bench = false
+
+# Standalone workspace: prevents capture by the parent z1kv workspace.
+[workspace]
