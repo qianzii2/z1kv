@@ -1,7 +1,5 @@
 # Z1KV
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
 嵌入式 MVCC key-value 存储引擎(纯库 crate,无 bin 入口)。
 
 - **版本模型**:每个版本 `(cf, key, txn_id) -> value | tombstone`
