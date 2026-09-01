@@ -1,7 +1,5 @@
 # Z1KV
 
-[English](README.md) | [简体中文](README.zh-CN.md)
-
 An embedded MVCC key-value storage engine (pure library crate, no binary).
 
 - **Versioning**: every version is `(cf, key, txn_id) -> value | tombstone`
