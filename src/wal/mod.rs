@@ -427,7 +427,9 @@ impl Inner {
         if self.queue.is_empty() {
             return Ok(());
         }
-        let entries: Vec<WalEntry> = self.queue.drain(..).collect();
+        // mem::take moves the whole queue out (reusing the allocation)
+        // instead of draining into a fresh Vec.
+        let entries = std::mem::take(&mut self.queue);
         for entry in entries {
             let bytes = WalWriter::encode_record(&entry)?;
             self.append_encoded(&bytes)?;
