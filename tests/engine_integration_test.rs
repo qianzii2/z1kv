@@ -585,14 +585,18 @@ fn concurrent_flush_compact_read_gate() {
     for i in 0..150u64 {
         let t = db.begin_txn().unwrap();
         let key = format!("rk_{}", i);
-        db.put(0, key.as_bytes(), i.to_le_bytes().to_vec(), t).unwrap();
+        db.put(0, key.as_bytes(), i.to_le_bytes().to_vec(), t)
+            .unwrap();
         db.commit(t).unwrap();
         let snap = db.snapshot();
         if db.get_at(&snap, 0, key.as_bytes()).unwrap().is_none() {
             misses += 1;
             eprintln!(
                 "GATE MISS i={} txn={} snap_id={} committed={:?}",
-                i, t, snap.snapshot_id, db.committed_entry(t)
+                i,
+                t,
+                snap.snapshot_id,
+                db.committed_entry(t)
             );
         }
     }
@@ -600,7 +604,10 @@ fn concurrent_flush_compact_read_gate() {
     stop.store(true, AO::Relaxed);
     flusher.join().unwrap();
     compactor.join().unwrap();
-    assert_eq!(misses, 0, "committed keys must be readable under flush+compact race");
+    assert_eq!(
+        misses, 0,
+        "committed keys must be readable under flush+compact race"
+    );
 }
 
 #[test]
