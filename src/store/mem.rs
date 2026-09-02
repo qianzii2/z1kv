@@ -122,6 +122,9 @@ impl MemStore {
 
         let key = (entry.key.clone(), entry.txn_id);
         let est = estimate_size(&entry);
+        if entry.txn_id == 65 {
+            eprintln!("[trace] put txn65 into hot");
+        }
         self.hot.lock().insert(key, entry);
         self.hot_size_bytes.fetch_add(est, Ordering::Relaxed);
         Ok(())
@@ -138,6 +141,9 @@ impl MemStore {
     pub fn replay_put(&self, entry: Z1Entry) {
         let key = (entry.key.clone(), entry.txn_id);
         let est = estimate_size(&entry);
+        if entry.txn_id == 65 {
+            eprintln!("[trace] put txn65 into hot");
+        }
         self.hot.lock().insert(key, entry);
         self.hot_size_bytes.fetch_add(est, Ordering::Relaxed);
     }
@@ -148,34 +154,40 @@ impl MemStore {
     }
 
     /// Atomically swap hot and cold buffers. Returns the drained (old cold) entries.
+    /// Atomically swap hot and cold buffers. Returns the drained (old cold) entries.
     pub fn swap_and_drain(&self) -> Vec<Z1Entry> {
+        // ROOT FIX (lost-read race): `old_hot` must be TAKEN, not cloned.
+        //
+        // The old clone-then-swap sequence had a fatal interleaving with
+        // `put`:
+        //   1. flusher clones hot (does NOT contain a yet-to-be-put entry)
+        //   2. writer puts txn N into hot and commits
+        //   3. flusher swaps hot→cold, drains cold (WITHOUT txn N), clears
+        //      cold, and publishes `snapshot = old_hot` (WITHOUT txn N)
+        //   4. the committed entry txn N is now in NO read source (hot was
+        //      replaced, cold cleared, snapshot stale) → it is invisible
+        //      until reopen, even though its WAL record is durable.
+        // Taking the whole hot map under the hot lock serializes put vs
+        // migration: a put either lands before the take (migrated + cached)
+        // or after (lives in the fresh hot buffer). There is no third
+        // interleaving.
         let old_hot: BTreeMap<MemKey, Z1Entry> = {
-            let hot = self.hot.lock();
-            hot.clone()
+            let mut hot = self.hot.lock();
+            let taken = std::mem::take(&mut *hot);
+            if taken.keys().any(|(_, t)| *t == 65) {
+                eprintln!("[trace] swap drained txn65 ({} entries)", taken.len());
+            }
+            taken
         };
 
-        // Fix: `drained` must contain **all** data moved out of the read
-        // path — the old cold buffer plus the old hot buffer (which the swap
-        // moved into cold). The old implementation returned only the old
-        // cold buffer and left old_hot sitting in cold until drain_cold;
-        // during that window none of the three read sources (hot/cold/
-        // snapshot) contained it and recent_flush had not been populated
-        // yet → a concurrent get fell into a vacuum window and returned None
-        // for committed data.
-        let drained: Vec<Z1Entry> = {
-            let mut cold = self.cold.lock();
-            let mut hot = self.hot.lock();
-            let mut drained: Vec<Z1Entry> = cold.values().cloned().collect();
-            std::mem::swap(&mut *hot, &mut *cold);
-            // Correction: after the swap, old_hot lives in cold — it must be
-            // taken with `drained` and cold emptied. Otherwise old_hot stays
-            // in cold forever (one of the three L1 read sources), duplicating
-            // data across L2 patches / recent_flush, with cold growing
-            // unboundedly.
-            drained.extend(cold.values().cloned());
-            cold.clear();
-            drained
-        };
+        // `drained` = everything migrated out of the read path. Since the
+        // take above leaves hot empty and every prior migration already
+        // carried the previous cold contents (each flush drains cold
+        // completely), the drained set is exactly `old_hot` here. Keeping
+        // this a pure take (no hot↔cold swap) preserves the put-vs-migration
+        // atomicity: a put either lands before the take (migrated + cached)
+        // or after (lives in the fresh hot buffer).
+        let drained: Vec<Z1Entry> = old_hot.values().cloned().collect();
 
         self.hot_size_bytes.store(0, Ordering::Relaxed);
         // Snapshot = old hot entries (visible during flush window).

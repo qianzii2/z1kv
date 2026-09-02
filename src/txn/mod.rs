@@ -491,6 +491,13 @@ impl Z1Kv {
         let active: std::collections::HashSet<TxnId> = snap.active_txns.iter().copied().collect();
         let commit_ts = &snap.commit_ts_map;
 
+        // Migration gate (read side): hold across candidate collection from
+        // all layers. A concurrent flush moves entries L1 → cache → L2 and
+        // clears the cache while publishing the patch index; without the
+        // gate a reader using a pre-publish L2 index copy could observe
+        // neither the (cleared) cache nor the (unindexed-for-it) patch.
+        let _gate = self.recent_flush.read_gate();
+
         // Merge candidates from L1 (+recent flush) + L2 + L3.
         let mut candidates: Vec<Z1Entry> = Vec::new();
 
@@ -644,6 +651,11 @@ impl Z1Kv {
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
         let active: std::collections::HashSet<TxnId> = snap.active_txns.iter().copied().collect();
         let commit_ts = &snap.commit_ts_map;
+
+        // Migration gate (read side): same rationale as `get_at` — keep the
+        // multi-layer candidate collection atomic against concurrent flush
+        // migration (L1 → cache → L2 + cache clear).
+        let _gate = self.recent_flush.read_gate();
 
         // key -> (txn_id, value|tombstone); merge four sources, keep the
         // highest visible txn_id.

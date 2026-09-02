@@ -21,6 +21,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct RecentFlushCache {
     /// Key: (Z1Key, txn_id), Value: Z1Entry.
     cache: RwLock<BTreeMap<(Z1Key, u64), Z1Entry>>,
+    /// Migration gate: readers hold this read lock while collecting
+    /// candidates from all layers; the flusher holds the write lock while
+    /// publishing patches to the L2 index AND clearing the cache. This
+    /// closes the migration window where a reader holding a stale L2 index
+    /// snapshot could observe neither the cache (already cleared) nor the
+    /// new patch (not yet in the reader's index copy).
+    migration_gate: RwLock<()>,
     /// Incremented after each L1→L2 flush.
     flush_epoch: AtomicU64,
 }
@@ -35,8 +42,23 @@ impl RecentFlushCache {
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(BTreeMap::new()),
+            migration_gate: RwLock::new(()),
             flush_epoch: AtomicU64::new(0),
         }
+    }
+
+    /// Read-side migration gate. Hold the returned guard while collecting
+    /// candidates from L1 / recent_flush / L2 so a concurrent flush cannot
+    /// move data out from under the read (see `migration_gate` docs).
+    pub fn read_gate(&self) -> parking_lot::RwLockReadGuard<'_, ()> {
+        self.migration_gate.read()
+    }
+
+    /// Write-side migration gate. The flusher holds it across "publish
+    /// patch to index + clear cache" so those two steps are atomic with
+    /// respect to gated readers.
+    pub fn write_gate(&self) -> parking_lot::RwLockWriteGuard<'_, ()> {
+        self.migration_gate.write()
     }
 
     /// Cache entries from a flush operation (replaces contents).

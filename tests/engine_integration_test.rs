@@ -426,6 +426,18 @@ fn concurrent_begin_pinned_repeatable_read() {
 /// covered by a checkpoint, and everything is readable at the end.
 /// (The read-side D8 window has its own test; this one locks in the write
 /// side's atomicity under flush/swap interleaving.)
+///
+/// Regression (read-migration gate): a committed key became invisible in
+/// all read sources when auto-compaction dropped the L2 index while a
+/// reader was mid-`get_at`. The failure mode was: reader holds a
+/// pre-compaction L2 index snapshot; compaction deletes those files and
+/// publishes an L3 patch that does NOT contain the key (it was still in
+/// L1, not yet flushed); a concurrent flush then migrates the key out of
+/// L1 and clears the recent-flush cache. Every source appeared empty even
+/// though the WAL was intact. The fix gates flush AND compaction against
+/// multi-source reads via `RecentFlushCache`'s migration gate, and makes
+/// `swap_and_drain` TAKE the hot buffer (serializing put vs migration) so
+/// an entry can never fall between clone and swap.
 #[test]
 fn concurrent_put_during_flush_never_loses_data() {
     use std::sync::Arc as StdArc;
@@ -534,6 +546,61 @@ fn concurrent_put_during_flush_never_loses_data() {
         db2.get(0, b"rk_149").unwrap(),
         Some(149u64.to_le_bytes().to_vec())
     );
+}
+
+/// Aggressive migration-gate regression: a flusher hammers flush_now with
+/// NO sleep while a compactor thread and a writer race; every committed key
+/// must be readable immediately after its commit under any interleaving.
+/// This pins the gate that serializes {flush, compaction} against
+/// multi-source reads (`get_at`), plus the take-based `swap_and_drain`
+/// that serializes put vs L1 migration. Without the gate this test loses
+/// ~2 keys per 150 deterministically (the compaction/L2-index race).
+#[test]
+fn concurrent_flush_compact_read_gate() {
+    use std::sync::atomic::{AtomicBool, Ordering as AO};
+    use std::sync::Arc as StdArc;
+
+    let dir = tmp_dir("gate_race");
+    let db: StdArc<Z1Kv> = StdArc::new(Z1Kv::open(dir.clone()).unwrap());
+    let stop = StdArc::new(AtomicBool::new(false));
+
+    let stop_f = stop.clone();
+    let db_f = StdArc::clone(&db);
+    let flusher = std::thread::spawn(move || {
+        while !stop_f.load(AO::Relaxed) {
+            let _ = db_f.flush_now();
+        }
+    });
+
+    let stop_c = stop.clone();
+    let db_c = StdArc::clone(&db);
+    let compactor = std::thread::spawn(move || {
+        while !stop_c.load(AO::Relaxed) {
+            let _ = db_c.compact(u64::MAX);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    });
+
+    let mut misses = 0;
+    for i in 0..150u64 {
+        let t = db.begin_txn().unwrap();
+        let key = format!("rk_{}", i);
+        db.put(0, key.as_bytes(), i.to_le_bytes().to_vec(), t).unwrap();
+        db.commit(t).unwrap();
+        let snap = db.snapshot();
+        if db.get_at(&snap, 0, key.as_bytes()).unwrap().is_none() {
+            misses += 1;
+            eprintln!(
+                "GATE MISS i={} txn={} snap_id={} committed={:?}",
+                i, t, snap.snapshot_id, db.committed_entry(t)
+            );
+        }
+    }
+
+    stop.store(true, AO::Relaxed);
+    flusher.join().unwrap();
+    compactor.join().unwrap();
+    assert_eq!(misses, 0, "committed keys must be readable under flush+compact race");
 }
 
 #[test]

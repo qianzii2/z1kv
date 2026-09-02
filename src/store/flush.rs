@@ -102,6 +102,15 @@ impl FlushEngine {
         // "this round's swapped" arrived (lost before ever being written);
         // merge + a final clear guarantees: either everything is written and
         // the cache cleared, or the data stays readable and retryable.
+        //
+        // Migration gate (write side): the WHOLE migration — swap L1,
+        // cache the swapped data, publish patches to the L2 index, clear
+        // the cache — runs under this write lock. Gated readers (see
+        // `Z1Kv::get_at` / `scan_at`) either observe the data in L1/the
+        // cache (flush not yet started) or in the L2 index (flush done);
+        // the intermediate "moved out of L1, not yet cached / not yet
+        // indexed" states are never visible to a gated reader.
+        let _gate = self.recent_flush.write_gate();
         let swapped = self.l1.swap_and_drain();
         self.recent_flush.cache_merge(&swapped);
 
@@ -121,6 +130,7 @@ impl FlushEngine {
         }
 
         let num_groups = groups.len();
+
         for (cf, entries) in groups {
             let patch_id = self.next_patch_id.fetch_add(1, Ordering::Relaxed);
             self.l2.append_patch(cf, entries, patch_id)?;
@@ -128,8 +138,12 @@ impl FlushEngine {
 
         // D8 + D5: everything written successfully → clear the cache; any
         // failure propagated via `?` above leaves the cache holding the
-        // not-yet-durable data (readable, retried next time).
+        // not-yet-durable data (readable, retried next time). The whole
+        // migration runs under the single write gate acquired above, so
+        // gated readers either see the data in the cache or in the L2
+        // index, never in neither.
         self.recent_flush.clear();
+        drop(_gate);
         self.recent_flush.increment_epoch();
         self.flush_epoch.fetch_add(1, Ordering::SeqCst);
 
@@ -162,6 +176,13 @@ impl FlushEngine {
     pub fn compact_l2_to_l3(&self, min_active_begin_ts: TxnId) -> Result<(usize, usize)> {
         let mut cfs_compacted = 0usize;
         let mut total_reclaimed = 0usize;
+
+        // Migration gate (write side): compaction replaces the L2 index
+        // contents (drop_cf) with an L3 patch. A gated reader may hold a
+        // pre-compaction L2 index snapshot whose files this compaction
+        // deletes — so the L2 takeover must be atomic with respect to gated
+        // readers, exactly like a flush.
+        let _gate = self.recent_flush.write_gate();
 
         // Enumerate the cfs present in L2 (by scanning directories via patch_ids).
         let cf_ids = self.l2.list_cfs();
